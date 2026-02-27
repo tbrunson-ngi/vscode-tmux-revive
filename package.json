@@ -1,0 +1,71 @@
+{
+  "name": "vscode-tmux-revive",
+  "displayName": "Tmux Revive",
+  "description": "Restore VS Code terminal sessions using tmux",
+  "version": "0.1.0",
+  "publisher": "tbrunson",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "tmuxRevive.newTerminal",
+        "title": "Tmux Revive: New Terminal"
+      },
+      {
+        "command": "tmuxRevive.restoreSession",
+        "title": "Tmux Revive: Restore Session"
+      },
+      {
+        "command": "tmuxRevive.saveSession",
+        "title": "Tmux Revive: Save Session"
+      }
+    ],
+    "terminal": {
+      "profiles": [
+        {
+          "id": "tmux-revive.tmux",
+          "title": "Tmux"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Tmux Revive",
+      "properties": {
+        "tmuxRevive.tmuxPath": {
+          "type": "string",
+          "default": "/opt/homebrew/bin/tmux",
+          "description": "Path to the tmux executable"
+        },
+        "tmuxRevive.autoRestore": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically restore tmux terminals on workspace open"
+        },
+        "tmuxRevive.sessionNaming": {
+          "type": "string",
+          "enum": ["path", "basename"],
+          "default": "path",
+          "description": "Session naming strategy: 'path' uses full path (vscode-/Users/tbrunson/vcs/project), 'basename' uses folder name only (vscode-project)"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.0"
+  }
+}
