@@ -48,6 +48,21 @@ async function ensureMainSession(session: string, cwd: string, cfg: Config): Pro
 	return null;
 }
 
+// Gets the next window index, creating the session if it doesn't exist.
+// Handles the race where a session is destroyed (last window closed) between
+// the existence check and the new-window call.
+async function getOrCreateWindow(session: string, cwd: string, cfg: Config): Promise<number> {
+	const initial = await ensureMainSession(session, cwd, cfg);
+	if (initial !== null) { return initial; }
+	try {
+		return await tmux.newWindow(session, cwd, cfg.tmuxPath);
+	} catch {
+		// Session was destroyed between our check and new-window (e.g. last window exited).
+		await tmux.newSession(session, cwd, cfg.tmuxPath);
+		return 0;
+	}
+}
+
 async function restoreSession(
 	session: string,
 	context: vscode.ExtensionContext,
@@ -65,7 +80,7 @@ async function restoreSession(
 
 	if (liveWindows.length === 0) {
 		const cwd = vscode.workspace.workspaceFolders![0].uri.fsPath;
-		const index = await tmux.newWindow(session, cwd, cfg.tmuxPath);
+		const index = await getOrCreateWindow(session, cwd, cfg);
 		await createLinkedTerminal(session, index, 'terminal', cwd, context, cfg);
 		return;
 	}
@@ -93,8 +108,7 @@ class TmuxProfileProvider implements vscode.TerminalProfileProvider {
 
 	async provideTerminalProfile(): Promise<vscode.TerminalProfile> {
 		const cwd = vscode.workspace.workspaceFolders?.[0].uri.fsPath ?? process.env.HOME!;
-		const index = (await ensureMainSession(this.session, cwd, this.cfg))
-			?? await tmux.newWindow(this.session, cwd, this.cfg.tmuxPath);
+		const index = await getOrCreateWindow(this.session, cwd, this.cfg);
 		const name = `terminal-${index}`;
 		const tabSession = tabSessionName(this.session, index);
 
@@ -118,8 +132,7 @@ function registerCommands(
 ): void {
 	context.subscriptions.push(
 		vscode.commands.registerCommand('tmuxRevive.newTerminal', async () => {
-			const index = (await ensureMainSession(session, workspacePath, cfg))
-				?? await tmux.newWindow(session, workspacePath, cfg.tmuxPath);
+			const index = await getOrCreateWindow(session, workspacePath, cfg);
 			await createLinkedTerminal(session, index, `terminal-${index}`, workspacePath, context, cfg);
 		}),
 
