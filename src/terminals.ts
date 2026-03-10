@@ -1,4 +1,7 @@
 import * as vscode from 'vscode';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import * as tmux from './tmux';
 import * as state from './state';
 import { Config } from './config';
@@ -12,10 +15,14 @@ interface TerminalRecord {
 
 export const trackedTerminals = new Map<vscode.Terminal, TerminalRecord>();
 
-// Pending map for profile-created terminals: name → record
-// VS Code creates the terminal object after provideTerminalProfile() returns,
-// so we register it here and pick it up in onDidOpenTerminal.
-const pendingTerminals = new Map<string, { index: number; cwd: string; tabSession: string }>();
+function delay(ms: number): Promise<void> {
+	return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// Pending map for script-launched terminals: slotId → session.
+// slotId is passed via env var VSCODE_TMUX_REVIVE_SLOT so we can use a
+// human-readable terminal name instead of encoding the id in the name.
+const pendingTerminals = new Map<string, { session: string }>();
 
 export function nextWindowIndex(): number {
 	const indexes = Array.from(trackedTerminals.values()).map(r => r.index);
@@ -36,8 +43,8 @@ export function buildStateFromTracked(sessionName: string): state.SessionState {
 	};
 }
 
-export function registerPendingTerminal(name: string, index: number, cwd: string, tabSession: string): void {
-	pendingTerminals.set(name, { index, cwd, tabSession });
+export function registerPendingTerminal(slotId: string, session: string): void {
+	pendingTerminals.set(slotId, { session });
 }
 
 export function createAndTrackTerminal(
@@ -65,12 +72,37 @@ export function registerLifecycleHooks(
 	cfg: Config,
 ): void {
 	context.subscriptions.push(
-		vscode.window.onDidOpenTerminal(terminal => {
-			const pending = pendingTerminals.get(terminal.name);
+		vscode.window.onDidOpenTerminal(async terminal => {
+			const opts = terminal.creationOptions as vscode.TerminalOptions;
+			const slotId = opts.env?.VSCODE_TMUX_REVIVE_SLOT;
+			if (!slotId) { return; }
+			const pending = pendingTerminals.get(slotId);
 			if (!pending) { return; }
-			pendingTerminals.delete(terminal.name);
-			trackedTerminals.set(terminal, { index: pending.index, label: terminal.name, cwd: pending.cwd, tabSession: pending.tabSession });
-			state.write(context, buildStateFromTracked(session));
+			pendingTerminals.delete(slotId);
+
+			// Script writes the temp file just before exec'ing into tmux.
+			// Retry a few times to handle the short race window.
+			const tmpFile = path.join(os.tmpdir(), `vscode-tmux-revive-${slotId}`);
+			let parsed: { index: number; tabSession: string; cwd: string } | undefined;
+			for (let i = 0; i < 10; i++) {
+				await delay(100);
+				try {
+					const raw = fs.readFileSync(tmpFile, 'utf8').trim();
+					const [indexStr, tabSession, cwd] = raw.split(':');
+					parsed = { index: parseInt(indexStr, 10), tabSession, cwd };
+					fs.unlinkSync(tmpFile);
+					break;
+				} catch { /* not written yet */ }
+			}
+			if (!parsed) { return; }
+
+			trackedTerminals.set(terminal, {
+				index: parsed.index,
+				label: `terminal-${parsed.index}`,
+				cwd: parsed.cwd,
+				tabSession: parsed.tabSession,
+			});
+			state.write(context, buildStateFromTracked(pending.session));
 		}),
 
 		vscode.window.onDidCloseTerminal(terminal => {

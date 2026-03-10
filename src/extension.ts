@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as os from 'os';
 import * as tmux from './tmux';
 import * as state from './state';
 import { getConfig, Config } from './config';
@@ -10,11 +11,18 @@ import {
 	registerPendingTerminal,
 } from './terminals';
 
+// Tmux normalizes '.' and ':' in session names to '_'. We apply the same
+// transformation up front so our has-session checks and new-session calls
+// always agree on the name.
+function sanitizeForTmux(s: string): string {
+	return s.replace(/[.:]/g, '_');
+}
+
 function sessionName(workspacePath: string, naming: 'path' | 'basename'): string {
 	if (naming === 'basename') {
-		return `vscode-${path.basename(workspacePath)}`;
+		return `vscode-${sanitizeForTmux(path.basename(workspacePath))}`;
 	}
-	return `vscode-${workspacePath}`;
+	return `vscode-${sanitizeForTmux(workspacePath)}`;
 }
 
 function delay(ms: number): Promise<void> {
@@ -23,6 +31,11 @@ function delay(ms: number): Promise<void> {
 
 function tabSessionName(session: string, index: number): string {
 	return `${session}--w${index}`;
+}
+
+function terminalName(session: string): string {
+	// session is "vscode-/full/path" or "vscode-basename" — strip prefix, take basename
+	return path.basename(session.replace(/^vscode-/, ''));
 }
 
 async function createLinkedTerminal(
@@ -107,19 +120,17 @@ class TmuxProfileProvider implements vscode.TerminalProfileProvider {
 	) {}
 
 	async provideTerminalProfile(): Promise<vscode.TerminalProfile> {
-		const cwd = vscode.workspace.workspaceFolders?.[0].uri.fsPath ?? process.env.HOME!;
-		const index = await getOrCreateWindow(this.session, cwd, this.cfg);
-		const name = `terminal-${index}`;
-		const tabSession = tabSessionName(this.session, index);
+		const slotId = Date.now().toString();
+		const scriptPath = path.join(this.context.extensionPath, 'scripts', 'tmux-attach.sh');
 
-		await tmux.newLinkedSession(this.session, tabSession, index, this.cfg.tmuxPath);
-		registerPendingTerminal(name, index, cwd, tabSession);
+		registerPendingTerminal(slotId, this.session);
 
 		return new vscode.TerminalProfile({
-			name,
-			shellPath: this.cfg.tmuxPath,
-			shellArgs: ['attach-session', '-t', tabSession],
-			cwd,
+			name: terminalName(this.session),
+			shellPath: scriptPath,
+			shellArgs: [slotId, this.session, this.cfg.tmuxPath, os.tmpdir()],
+			env: { VSCODE_TMUX_REVIVE_SLOT: slotId },
+			// No cwd — VS Code sets $PWD to the user-selected folder
 		});
 	}
 }
@@ -127,13 +138,22 @@ class TmuxProfileProvider implements vscode.TerminalProfileProvider {
 function registerCommands(
 	context: vscode.ExtensionContext,
 	session: string,
-	workspacePath: string,
 	cfg: Config,
 ): void {
 	context.subscriptions.push(
 		vscode.commands.registerCommand('tmuxRevive.newTerminal', async () => {
-			const index = await getOrCreateWindow(session, workspacePath, cfg);
-			await createLinkedTerminal(session, index, `terminal-${index}`, workspacePath, context, cfg);
+			const slotId = Date.now().toString();
+			const scriptPath = path.join(context.extensionPath, 'scripts', 'tmux-attach.sh');
+
+			registerPendingTerminal(slotId, session);
+
+			vscode.window.createTerminal({
+				name: terminalName(session),
+				shellPath: scriptPath,
+				shellArgs: [slotId, session, cfg.tmuxPath, os.tmpdir()],
+				env: { VSCODE_TMUX_REVIVE_SLOT: slotId },
+				// No cwd — VS Code defaults to active workspace folder
+			}).show();
 		}),
 
 		vscode.commands.registerCommand('tmuxRevive.restoreSession', async () => {
@@ -168,7 +188,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			new TmuxProfileProvider(session, context, cfg)),
 	);
 
-	registerCommands(context, session, workspacePath, cfg);
+	registerCommands(context, session, cfg);
 	registerLifecycleHooks(context, session, cfg);
 
 	if (!cfg.autoRestore) { return; }
